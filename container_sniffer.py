@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # vim: ts=4 sw=4
 # A small program to capture which container is sending traffic to a specific IP.
+#
 import socket
 import struct
 import binascii
@@ -14,8 +15,10 @@ capture_dest_ip = "192.168.1.87"
 verbose = True
 very_verbose = False
 
+
 # gloabl variable to hold container info
 container_info = {}
+
 
 class ContainerInfo(Thread):
     def __init__(self):
@@ -64,9 +67,11 @@ class PacketCapture(Thread):
         self.raw_socket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800))
         try:
             self.raw_socket.setsockopt(socket.SOL_SOCKET, 25, str(bind_nic + '\0').encode('utf-8'))
-            self.raw_socket.ins.bind((iface, 0x0800))
+            self.raw_socket.ins.bind(bind_nic, 0x0800)
         except NameError:
             print("packet capture thread: using all interfaces")
+        # flood protection
+        self._ip_logged = {}
         while True:
             self._pkt = self.raw_socket.recvfrom(2048)
             self._ip_header = self._pkt[0][14:34]
@@ -76,14 +81,30 @@ class PacketCapture(Thread):
                 self._tcp_hdr = struct.unpack("!HHLLBBHHH", self._tcp_header)
                 self.src_ip  = socket.inet_ntoa(self._ip_hdr[1])
                 self.dest_ip = socket.inet_ntoa(self._ip_hdr[2])
-                if str(self.dest_ip) == capture_dest_ip:
+                if str(self.dest_ip) == capture_dest_ip and self.logq(self.src_ip,self._ip_logged) == True:
                     if self._tcp_hdr[5] & 0x002: # SYN Packet
+                        self._ip_logged[self.src_ip] = time.time()
                         if self.src_ip in container_info:
-                            print("{},{},{},{}".format(self._src_ip,self._dest_ip,container_info[self.src_ip]['name'],container_info[self.src_ip]['JenkinsServerUrl']))
+                            print("{},{},{},{}".format(self.src_ip,self.dest_ip,container_info[self.src_ip]['name'],container_info[self.src_ip]['JenkinsServerUrl']))
                         else:
                             print("{},{},{},{}".format(self.src_ip,self.dest_ip,"ContainerNotFound","NotFound"))
             except Exception as e:
                 print("Got an error: {}".format(e))
+    #
+    def logq(self,src_ip,ip_logged):
+        if src_ip in ip_logged:
+            if ip_logged[src_ip] + 10 <= time.time():
+                if verbose:
+                    print("packet capture thread: ip flood off")
+                return True
+            else:
+                if verbose:
+                    print("packet capture thread: flood detection activated")
+                return False
+        else:
+            if verbose:
+                print("packet capture thread: ip not previously logged")
+            return True
 
 
 def main():
